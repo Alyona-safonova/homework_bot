@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import time
+from http import HTTPStatus
 
 import requests
 import telegram
@@ -25,22 +26,6 @@ HOMEWORK_STATUSES = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-logging.basicConfig(
-    format="%(asctime)s, %(levelname)s, %(filename)s, %(lineno)s, %(message)s",
-    level=logging.DEBUG,
-    filename='main.log',
-    filemode='w'
-)
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler(stream=sys.stdout)
-logger.addHandler(handler)
-formatter = logging.Formatter(
-    '%(asctime)s, %(levelname)s, %(filename)s, %(lineno)s, %(message)s'
-)
-
-handler.setFormatter(formatter)
-
 
 def send_message(bot, message):
     """отправляет сообщение в Telegram чат."""
@@ -49,7 +34,7 @@ def send_message(bot, message):
             TELEGRAM_CHAT_ID,
             message
         )
-    except Exception as error:
+    except telegram.error.TelegramError as error:
         logger.error(f'сбой при отправке сообщения в Telegram: {error}')
     else:
         logger.info(f'Бот отправил сообщение"{message}')
@@ -62,17 +47,18 @@ def get_api_answer(current_timestamp):
     преобразовав его из формата JSON к типам данных Python."""
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
-    api_answer = requests.get(ENDPOINT, headers=HEADERS, params=params)
+    try:
+        api_answer = requests.get(ENDPOINT, headers=HEADERS, params=params)
+    except Exception as error:
+        message = f'URL-адрес {ENDPOINT} недоступен: {error}.'
+        raise ConnectionError(message)
     status_code = api_answer.status_code
-    if status_code == 200:
+    if status_code != HTTPStatus.OK:
+        message = f'В URL-адресе {ENDPOINT}: {status_code} - {api_answer.text}'
+        raise ConnectionError(message)
+    else:
         homework = api_answer.json()
         return homework
-    else:
-        if status_code == 503:
-            message = f'Недоступность эндпоинта "{ENDPOINT}".'
-        else:
-            message = 'любые другие сбои'
-        raise ConnectionError(message)
 
 
 def check_response(response):
@@ -85,7 +71,7 @@ def check_response(response):
         message = 'Ошибка словаря по ключу homeworks'
         raise KeyError(message)
     if type(homework) != list:
-        raise TypeError('Проверка типа дз')
+        raise TypeError('Неверный тип данных у элемента homeworks')
     return homework
 
 
@@ -94,7 +80,7 @@ def parse_status(homework):
     if 'homework_name' not in homework:
         raise KeyError('Отсутствует ключ "homework_name" в ответе API')
     if 'status' not in homework:
-        raise Exception('Отсутствует ключ "status" в ответе API')
+        raise KeyError('Отсутствует ключ "status" в ответе API')
     homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
     if homework_status not in HOMEWORK_STATUSES:
@@ -106,11 +92,7 @@ def parse_status(homework):
 
 def check_tokens():
     """Проверяет доступность переменных окружения."""
-    tokens = [PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]
-    for token in tokens:
-        if token is None:
-            return False
-    return True
+    return all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID])
 
 
 def main():
@@ -133,15 +115,25 @@ def main():
                         previous_message = message
                 else:
                     logger.debug("Отсутствие в ответе новых статусов.")
-
-            current_timestamp = int(time.time())
-            time.sleep(RETRY_TIME)
+                current_timestamp = int(time.time())
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
             logger.error(message)
             send_message(message, bot)
+        finally:
             time.sleep(RETRY_TIME)
 
 
 if __name__ == '__main__':
     main()
+
+logger = logging.getLogger(__name__)
+handler = logging.StreamHandler(stream=sys.stdout)
+
+logging.basicConfig(
+    format="%(asctime)s, %(levelname)s, %(filename)s, %(lineno)s, %(message)s",
+    level=logging.DEBUG,
+    handlers=[handler],
+    filename='main.log',
+    filemode='w'
+)
